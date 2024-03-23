@@ -1060,10 +1060,18 @@ verb 3" >>/etc/openvpn/client-template.txt
 function newClient() {
 	echo ""
 	echo "Tell me a name for the client."
-	echo "The name must consist of alphanumeric character. It may also include an underscore or a dash."
+	echo "The name must consist of alphanumeric character. It may also include an underscore, dot or a dash."
 
-	until [[ $CLIENT =~ ^[a-zA-Z0-9_-]+$ ]]; do
+	until [[ $CLIENT =~ ^[a-zA-Z0-9_-\.]+$ ]]; do
 		read -rp "Client name: " -e CLIENT
+	done
+
+	echo ""
+	echo "Tell me a domain name for the client $CLIENT."
+	echo "The name must consist of alphanumeric character. It may also include an underscore, dot or a dash."
+
+	until [[ $DOMAIN_CLIENT =~ ^[a-zA-Z0-9_-\.]+$ ]]; do
+		read -rp "Domain client name: " -e DOMAIN_CLIENT
 	done
 
 	echo ""
@@ -1120,7 +1128,7 @@ function newClient() {
 	fi
 
 	# Generates the custom client.ovpn
-	cp /etc/openvpn/client-template.txt "$homeDir/$CLIENT.ovpn"
+	cp /etc/openvpn/client-template.txt "$homeDir/${CLIENT}_${DOMAIN_CLIENT}.ovpn"
 	{
 		echo "<ca>"
 		cat "/etc/openvpn/easy-rsa/pki/ca.crt"
@@ -1147,10 +1155,10 @@ function newClient() {
 			echo "</tls-auth>"
 			;;
 		esac
-	} >>"$homeDir/$CLIENT.ovpn"
+	} >>"$homeDir/${CLIENT}_${DOMAIN_CLIENT}.ovpn"
 
 	echo ""
-	echo "The configuration file has been written to $homeDir/$CLIENT.ovpn."
+	echo "The configuration file has been written to $homeDir/${CLIENT}_${DOMAIN_CLIENT}.ovpn."
 	echo "Download the .ovpn file and import it in your OpenVPN client."
 
 	exit 0
