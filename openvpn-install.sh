@@ -102,6 +102,8 @@ function initialCheck() {
 		exit 1
 	fi
 	checkOS
+
+	echo "Detected OS: $OS"
 }
 
 function installUnbound() {
@@ -111,13 +113,16 @@ function installUnbound() {
 		if [[ $OS =~ (debian|ubuntu) ]]; then
 			apt-get install -y unbound
 
+			if [[ -d /etc/unbound/unbound.conf.d ]] && [[ ! -f /etc/unbound/unbound.conf.d/openvpn.conf ]]; then 
 			# Configuration
-			echo 'interface: 10.8.0.1
-access-control: 10.8.0.1/24 allow
-hide-identity: yes
-hide-version: yes
-use-caps-for-id: yes
-prefetch: yes' >>/etc/unbound/unbound.conf
+			echo 'server:
+	interface: 10.8.0.1
+	access-control: 10.8.0.1/24 allow
+	hide-identity: yes
+	hide-version: yes
+	use-caps-for-id: yes
+	prefetch: yes' >>/etc/unbound/unbound.conf.d/openvpn.conf
+			fi
 
 		elif [[ $OS =~ (centos|amzn|oracle) ]]; then
 			yum install -y unbound
@@ -187,7 +192,11 @@ private-address: 127.0.0.0/8
 private-address: ::ffff:0:0/96" >>/etc/unbound/unbound.conf
 		fi
 	else # Unbound is already installed
-		echo 'include: /etc/unbound/openvpn.conf' >>/etc/unbound/unbound.conf
+		fname=/etc/unbound/unbound.conf.d/openvpn.conf
+		if [[ ! -d /etc/unbound/unbound.conf.d ]]; then
+			echo 'include: /etc/unbound/openvpn.conf' >>/etc/unbound/unbound.conf
+			fname=/etc/unbound/openvpn.conf
+		fi
 
 		# Add Unbound 'server' for the OpenVPN subnet
 		echo 'server:
@@ -205,10 +214,10 @@ private-address: 169.254.0.0/16
 private-address: fd00::/8
 private-address: fe80::/10
 private-address: 127.0.0.0/8
-private-address: ::ffff:0:0/96' >/etc/unbound/openvpn.conf
+private-address: ::ffff:0:0/96' >$fname
 		if [[ $IPV6_SUPPORT == 'y' ]]; then
 			echo 'interface: fd42:42:42:42::1
-access-control: fd42:42:42:42::/112 allow' >>/etc/unbound/openvpn.conf
+access-control: fd42:42:42:42::/112 allow' >>$fname
 		fi
 	fi
 
@@ -1062,7 +1071,7 @@ function newClient() {
 	echo "Tell me a name for the client."
 	echo "The name must consist of alphanumeric character. It may also include an underscore, dot or a dash."
 
-	until [[ $CLIENT =~ ^[a-zA-Z0-9_-\.]+$ ]]; do
+	until [[ $CLIENT =~ ^[a-zA-Z0-9\._-]+$ ]]; do
 		read -rp "Client name: " -e CLIENT
 	done
 
@@ -1070,7 +1079,7 @@ function newClient() {
 	echo "Tell me a domain name for the client $CLIENT."
 	echo "The name must consist of alphanumeric character. It may also include an underscore, dot or a dash."
 
-	until [[ $DOMAIN_CLIENT =~ ^[a-zA-Z0-9_-\.]+$ ]]; do
+	until [[ $DOMAIN_CLIENT =~ ^[a-zA-Z0-9\._-]+$ ]]; do
 		read -rp "Domain client name: " -e DOMAIN_CLIENT
 	done
 
@@ -1084,24 +1093,30 @@ function newClient() {
 		read -rp "Select an option [1-2]: " -e -i 1 PASS
 	done
 
-	CLIENTEXISTS=$(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep -c -E "/CN=$CLIENT\$")
-	if [[ $CLIENTEXISTS == '1' ]]; then
-		echo ""
-		echo "The specified client CN was already found in easy-rsa, please choose another name."
-		exit
-	else
-		cd /etc/openvpn/easy-rsa/ || return
-		case $PASS in
-		1)
-			./easyrsa --batch build-client-full "$CLIENT" nopass
-			;;
-		2)
-			echo "⚠️ You will be asked for the client password below ⚠️"
-			./easyrsa --batch build-client-full "$CLIENT"
-			;;
-		esac
-		echo "Client $CLIENT added."
+	KEY_INDEX_FILE=/etc/openvpn/easy-rsa/pki/index.txt
+	CLIENTSLINE="$(grep "/CN=$1/" $KEY_INDEX_FILE)"
+	if [[ $CLIENTS_LINE != "" ]]; then 
+		COLUMN_NUMBER="$(echo $CLIENTSLINE | awk -F' ' '{print NF;}')"
+		if [[ $COLUMN_NUMBER -eq 6 ]] && [[ $line == R* ]]; then
+			sed -i "${COLUMN_NUMBER}d" $KEY_INDEX_FILE
+		else
+			echo ""
+			echo "The specified client CN was already found in easy-rsa, please choose another name."
+			exit
+		fi
 	fi
+
+	cd /etc/openvpn/easy-rsa/ || return
+	case $PASS in
+	1)
+		./easyrsa --batch build-client-full "$CLIENT" nopass
+		;;
+	2)
+		echo "⚠️ You will be asked for the client password below ⚠️"
+		./easyrsa --batch build-client-full "$CLIENT"
+		;;
+	esac
+	echo "Client $CLIENT added."
 
 	# Home directory of the user, where the client configuration will be written
 	if [ -e "/home/${CLIENT}" ]; then
@@ -1183,14 +1198,15 @@ function revokeClient() {
 		fi
 	done
 	CLIENT=$(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$CLIENTNUMBER"p)
+	
 	cd /etc/openvpn/easy-rsa/ || return
 	./easyrsa --batch revoke "$CLIENT"
 	EASYRSA_CRL_DAYS=3650 ./easyrsa gen-crl
 	rm -f /etc/openvpn/crl.pem
 	cp /etc/openvpn/easy-rsa/pki/crl.pem /etc/openvpn/crl.pem
 	chmod 644 /etc/openvpn/crl.pem
-	find /home/ -maxdepth 2 -name "$CLIENT.ovpn" -delete
-	rm -f "/root/$CLIENT.ovpn"
+	find /home/ -maxdepth 2 -name "${CLIENT}_*.ovpn" -delete
+	rm -f /root/${CLIENT}_*.ovpn
 	sed -i "/^$CLIENT,.*/d" /etc/openvpn/ipp.txt
 	cp /etc/openvpn/easy-rsa/pki/index.txt{,.bk}
 
